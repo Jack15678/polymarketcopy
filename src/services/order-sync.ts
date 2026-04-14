@@ -1,6 +1,8 @@
 /**
  * Order sync helpers for reconciling follower orders with leader activity.
  * Used by the copy engine when batching or retrying CLOB submissions.
+ *
+ * Cursor updates are retry-safe: callers may bump repeatedly with the same trade id.
  */
 
 export type SyncCursor = {
