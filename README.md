@@ -71,8 +71,8 @@
 **HTTPS（通用，无需配置 SSH）：**
 
 ```bash
-git clone https://github.com/SXai-lab/prediction-market-copytrade.git
-cd prediction-market-copytrade
+git clone https://github.com/JeanDupuis68/polymarket-copytrade
+cd polymarket-copytrade
 ```
 
 **SSH（若你对 GitHub 使用 SSH 密钥）：**
