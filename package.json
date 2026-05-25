@@ -15,6 +15,7 @@
     "copy": "tsx src/index.ts",
     "screen:candidates": "tsx scripts/screen-copy-candidates.ts",
     "screen:candidates:proxy": "node --use-env-proxy --import tsx scripts/screen-copy-candidates.ts",
+    "test:creds": "tsx scripts/test-credentials.ts",
     "lint": "tsc --noEmit && tsc -p tsconfig.scripts.json"
   },
   "dependencies": {
