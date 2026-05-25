@@ -1,6 +1,10 @@
 import { Wallet } from "@ethersproject/wallet";
 
 const env = process.env;
+const ALLOWED_DEFAULT_ENDPOINTS = new Set([
+  "https://data-api.polymarket.com",
+  "https://clob.polymarket.com",
+]);
 
 function normalizePrivateKey(raw: string): string {
   const s = raw.trim();
@@ -66,5 +70,13 @@ export function validateConfig(): string | null {
   const hasCreds = config.apiKey && config.apiSecret && config.apiPassphrase;
   if (!hasCreds && !config.autoDeriveApiKey)
     return "Set POLYMARKET_API_KEY/SECRET/PASSPHRASE or POLYMARKET_AUTO_DERIVE_API_KEY=true";
+  if ((env.POLYMARKET_ALLOW_CUSTOM_ENDPOINTS ?? "false").toLowerCase() !== "true") {
+    if (!ALLOWED_DEFAULT_ENDPOINTS.has(config.dataApiUrl) || !ALLOWED_DEFAULT_ENDPOINTS.has(config.clobUrl)) {
+      return (
+        "Custom Polymarket endpoints are disabled by default. Keep POLYMARKET_DATA_API_URL and " +
+        "POLYMARKET_CLOB_URL unset, or set POLYMARKET_ALLOW_CUSTOM_ENDPOINTS=true only after auditing the endpoints."
+      );
+    }
+  }
   return null;
 }

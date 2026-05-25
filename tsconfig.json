@@ -2,9 +2,8 @@
   "compilerOptions": {
     "outDir": "./dist",
     "rootDir": "./src",
-    // Module settings
-    "module": "CommonJS", // <-- Use CommonJS to support require()
-    "moduleResolution": "node", // Node-style module resolution
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "target": "esnext",
     "lib": [
       "esnext",
@@ -15,7 +14,7 @@
     "declaration": true,
     "declarationMap": true,
     // Type checking
-    "strict": false, // <-- disable strict mode
+    "strict": false,
     "noUncheckedIndexedAccess": false,
     "exactOptionalPropertyTypes": false,
     // Other recommended options
