@@ -137,7 +137,7 @@ export interface OrderBookSummary {
 
 export interface OrderMarketConfig {
   tickSize: string;
-  negRisk: boolean;
+  negRisk?: boolean;
 }
 
 export async function getOrderBook(tokenId: string): Promise<OrderBookSummary | null> {
@@ -162,7 +162,6 @@ export async function getOrderMarketConfig(tokenId: string): Promise<OrderMarket
   if (!book) return null;
   return {
     tickSize: book.tick_size ? toTickSize(book.tick_size) : "0.01",
-    negRisk: Boolean(book.neg_risk),
   };
 }
 
@@ -186,7 +185,10 @@ export async function placeLimitOrder(
         size: roundedSize,
         side: sideEnum,
       },
-      { tickSize: toTickSize(orderConfig.tickSize), negRisk: orderConfig.negRisk },
+      {
+        tickSize: toTickSize(orderConfig.tickSize),
+        ...(orderConfig.negRisk === undefined ? {} : { negRisk: orderConfig.negRisk }),
+      },
       OrderType.GTC
     );
     return { orderID: (res as { orderID?: string })?.orderID ?? (res as { id?: string })?.id };
@@ -213,7 +215,10 @@ export async function placeMarketOrder(
         amount: roundedAmount,
         side: sideEnum,
       },
-      { tickSize: toTickSize(orderConfig.tickSize), negRisk: orderConfig.negRisk }
+      {
+        tickSize: toTickSize(orderConfig.tickSize),
+        ...(orderConfig.negRisk === undefined ? {} : { negRisk: orderConfig.negRisk }),
+      }
     );
     return { orderID: (res as { orderID?: string })?.orderID ?? (res as { id?: string })?.id };
   } catch (e) {
