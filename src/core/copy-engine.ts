@@ -1,5 +1,5 @@
 import { getActivity, getPositions, tradeEventKey } from "../services/data-api.js";
-import { getTickSize, placeLimitOrder } from "../services/clob.js";
+import { getOrderMarketConfig, placeLimitOrder } from "../services/clob.js";
 import { config } from "../config/index.js";
 import { getCopyTarget } from "../utils/target.js";
 
@@ -24,11 +24,23 @@ async function buildSnapshot(user: string): Promise<Set<string>> {
 
 const SEEN_CAP = 10_000;
 const seen = new Set<string>();
+let startupSnapshotPromise: Promise<Set<string>> | null = null;
+let warmedUp = false;
 
 function trimSeen(): void {
   if (seen.size <= SEEN_CAP) return;
   const arr = [...seen];
   for (let i = 0; i < arr.length - SEEN_CAP; i++) seen.delete(arr[i]!);
+}
+
+function getStartupSnapshot(user: string): Promise<Set<string>> {
+  if (!startupSnapshotPromise) {
+    startupSnapshotPromise = buildSnapshot(user).then((snapshot) => {
+      console.log(`Initialized startup position snapshot: ${snapshot.size} assets`);
+      return snapshot;
+    });
+  }
+  return startupSnapshotPromise;
 }
 
 function applySizeLimit(size: number, price: number): number {
@@ -50,7 +62,7 @@ export async function pollAndCopy(): Promise<{
   if (!user) return { fetched: 0, copied: 0, errors: ["No target user"] };
 
   // Snapshot of target's open positions at copy-start.
-  const snapshot = await buildSnapshot(user);
+  const snapshot = await getStartupSnapshot(user);
 
   const activities = await getActivity(config.dataApiUrl, {
     user,
@@ -60,6 +72,17 @@ export async function pollAndCopy(): Promise<{
     sortBy: "TIMESTAMP",
     sortDirection: "DESC",
   });
+
+  if (!warmedUp) {
+    for (const a of activities) {
+      if (a.type !== "TRADE" || !a.asset || !a.side) continue;
+      seen.add(tradeEventKey(a));
+      trimSeen();
+    }
+    warmedUp = true;
+    console.log(`Initialized recent activity baseline: ${seen.size} trades`);
+    return { fetched: activities.length, copied: 0, errors };
+  }
 
   let copied = 0;
   for (let i = activities.length - 1; i >= 0; i--) {
@@ -83,18 +106,18 @@ export async function pollAndCopy(): Promise<{
 
     const orderSize = applySizeLimit(size, price);
 
-    let tickSize: string | null = null;
+    let orderConfig: Awaited<ReturnType<typeof getOrderMarketConfig>> = null;
     try {
-      tickSize = await getTickSize(tokenId);
+      orderConfig = await getOrderMarketConfig(tokenId);
     } catch (e) {
-      errors.push(`tick ${tokenId}: ${e instanceof Error ? e.message : e}`);
+      errors.push(`market config ${tokenId}: ${e instanceof Error ? e.message : e}`);
     }
-    if (tickSize === null) {
+    if (orderConfig === null) {
       errors.push(`Skip: no orderbook for token ${tokenId.slice(0, 12)}... (market may be closed or resolved)`);
       continue;
     }
 
-    const result = await placeLimitOrder(tokenId, side, price, orderSize, tickSize, false);
+    const result = await placeLimitOrder(tokenId, side, price, orderSize, orderConfig);
     if (result.error) {
       errors.push(`${tokenId} ${side}: ${result.error}`);
     } else {

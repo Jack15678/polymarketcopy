@@ -13,6 +13,7 @@ function toTickSize(s: string): TickSize {
 
 let client: ClobClient | null = null;
 let clientPromise: Promise<ClobClient> | null = null;
+let readOnlyClient: ClobClient | null = null;
 
 function getSigner(): Wallet {
   return new Wallet(config.privateKey);
@@ -22,6 +23,11 @@ function getApiCreds(): { key: string; secret: string; passphrase: string } | nu
   if (config.apiKey && config.apiSecret && config.apiPassphrase)
     return { key: config.apiKey, secret: config.apiSecret, passphrase: config.apiPassphrase };
   return null;
+}
+
+function getReadOnlyClobClient(): ClobClient {
+  if (!readOnlyClient) readOnlyClient = new ClobClient(config.clobUrl, config.chainId);
+  return readOnlyClient;
 }
 
 function isFullApiCreds(c: { key?: string; secret?: string; passphrase?: string }): c is {
@@ -123,14 +129,19 @@ export async function getClobClient(): Promise<ClobClient> {
 
 export interface OrderBookSummary {
   tick_size: string;
-  bids: [string, string][];
-  asks: [string, string][];
+  bids: Array<[string, string] | { price: string; size: string }>;
+  asks: Array<[string, string] | { price: string; size: string }>;
   min_order_size?: string;
   neg_risk?: boolean;
 }
 
+export interface OrderMarketConfig {
+  tickSize: string;
+  negRisk: boolean;
+}
+
 export async function getOrderBook(tokenId: string): Promise<OrderBookSummary | null> {
-  const c = new ClobClient(config.clobUrl, config.chainId);
+  const c = getReadOnlyClobClient();
   try {
     const book = await c.getOrderBook(tokenId);
     return book as unknown as OrderBookSummary;
@@ -141,9 +152,18 @@ export async function getOrderBook(tokenId: string): Promise<OrderBookSummary | 
 
 /** Returns tick size string, or null if no orderbook (e.g. market closed/resolved). */
 export async function getTickSize(tokenId: string): Promise<string | null> {
+  const orderConfig = await getOrderMarketConfig(tokenId);
+  return orderConfig?.tickSize ?? null;
+}
+
+/** Returns order builder config, or null if the market has no live orderbook. */
+export async function getOrderMarketConfig(tokenId: string): Promise<OrderMarketConfig | null> {
   const book = await getOrderBook(tokenId);
   if (!book) return null;
-  return book.tick_size ? toTickSize(book.tick_size) : "0.01";
+  return {
+    tickSize: book.tick_size ? toTickSize(book.tick_size) : "0.01",
+    negRisk: Boolean(book.neg_risk),
+  };
 }
 
 export async function placeLimitOrder(
@@ -151,12 +171,11 @@ export async function placeLimitOrder(
   side: "BUY" | "SELL",
   price: number,
   size: number,
-  tickSize: string,
-  negRisk: boolean = false
+  orderConfig: OrderMarketConfig
 ): Promise<{ orderID?: string; error?: string }> {
   const clob = await getClobClient();
   const sideEnum = side === "BUY" ? Side.BUY : Side.SELL;
-  const roundedPrice = roundToTick(price, parseFloat(tickSize));
+  const roundedPrice = roundToTick(price, parseFloat(orderConfig.tickSize));
   const roundedSize = Math.max(0.01, Math.round(size * 100) / 100);
 
   try {
@@ -167,7 +186,7 @@ export async function placeLimitOrder(
         size: roundedSize,
         side: sideEnum,
       },
-      { tickSize: toTickSize(tickSize), negRisk },
+      { tickSize: toTickSize(orderConfig.tickSize), negRisk: orderConfig.negRisk },
       OrderType.GTC
     );
     return { orderID: (res as { orderID?: string })?.orderID ?? (res as { id?: string })?.id };
@@ -181,8 +200,7 @@ export async function placeMarketOrder(
   tokenId: string,
   side: "BUY" | "SELL",
   amount: number,
-  tickSize: string,
-  negRisk: boolean = false
+  orderConfig: OrderMarketConfig
 ): Promise<{ orderID?: string; error?: string }> {
   const clob = await getClobClient();
   const sideEnum = side === "BUY" ? Side.BUY : Side.SELL;
@@ -195,7 +213,7 @@ export async function placeMarketOrder(
         amount: roundedAmount,
         side: sideEnum,
       },
-      { tickSize: toTickSize(tickSize), negRisk }
+      { tickSize: toTickSize(orderConfig.tickSize), negRisk: orderConfig.negRisk }
     );
     return { orderID: (res as { orderID?: string })?.orderID ?? (res as { id?: string })?.id };
   } catch (e) {
