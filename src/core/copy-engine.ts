@@ -1,7 +1,30 @@
-import { getActivity, tradeEventKey } from "../services/data-api.js";
+import { getActivity, getPositions, tradeEventKey } from "../services/data-api.js";
 import { getTickSize, placeLimitOrder } from "../services/clob.js";
 import { config } from "../config/index.js";
 import { getCopyTarget } from "../utils/target.js";
+
+/** Snapshot state of the target's positions during copy session. */
+type PositionDir = "long" | "short";
+
+/**
+ * Build initial working map from the target's current open positions.
+ * Direction is inferred from currentValue: positive = long, negative = short.
+ */
+async function buildWorkingMap(user: string): Promise<Map<string, { dir: PositionDir; size: number }>> {
+  const map = new Map<string, { dir: PositionDir; size: number }>();
+  try {
+    const positions = await getPositions(config.dataApiUrl, { user, limit: 500 });
+    for (const p of positions) {
+      if (!p.asset || !p.size || p.size <= 0) continue;
+      // currentValue > 0 → long, currentValue < 0 → short
+      const dir: PositionDir = (p.currentValue ?? 0) < 0 ? "short" : "long";
+      map.set(p.asset, { dir, size: p.size });
+    }
+  } catch (e) {
+    console.warn("Failed to fetch initial positions:", e instanceof Error ? e.message : e);
+  }
+  return map;
+}
 
 const SEEN_CAP = 10_000;
 const seen = new Set<string>();
@@ -30,6 +53,13 @@ export async function pollAndCopy(): Promise<{
   const user = getCopyTarget() || config.targetUser;
   if (!user) return { fetched: 0, copied: 0, errors: ["No target user"] };
 
+  // Build working map from target's current positions at copy start.
+  // Any asset in this map → target already held it → skip all subsequent operations on it.
+  const workingMap = await buildWorkingMap(user);
+  // Track assets that become "known" during the session (new opens we participate in).
+  // Once tracked, also skip future operations to avoid double-copying.
+  const knownAssets = new Set<string>(workingMap.keys());
+
   const activities = await getActivity(config.dataApiUrl, {
     user,
     limit: config.activityLimit,
@@ -49,13 +79,21 @@ export async function pollAndCopy(): Promise<{
     seen.add(key);
     trimSeen();
 
+    const tokenId = a.asset;
+    const side = a.side;
+
+    // Skip if target already held this asset at copy-start, or we've already participated in it.
+    if (knownAssets.has(tokenId)) continue;
+
     const price = a.price ?? 0;
     const size = a.size ?? 0;
     if (size < 0.01) continue;
 
-    const tokenId = a.asset;
-    const side = a.side;
     const orderSize = applySizeLimit(size, price);
+
+    if (!workingMap.has(tokenId)) {
+      workingMap.set(tokenId, { dir: side === "BUY" ? "long" : "short", size });
+    }
 
     let tickSize: string | null = null;
     try {
