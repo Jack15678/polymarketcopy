@@ -16,12 +16,13 @@
     "screen:candidates": "tsx scripts/screen-copy-candidates.ts",
     "screen:candidates:proxy": "node --use-env-proxy --import tsx scripts/screen-copy-candidates.ts",
     "test:creds": "tsx scripts/test-credentials.ts",
+    "test:order": "tsx scripts/test-order-config.ts",
     "lint": "tsc --noEmit && tsc -p tsconfig.scripts.json"
   },
   "dependencies": {
     "@ethersproject/providers": "^5.7.2",
     "@ethersproject/wallet": "^5.7.0",
-    "@polymarket/clob-client": "^5.3.0",
+    "@polymarket/clob-client-v2": "^1.0.6",
     "dotenv": "^16.4.0"
   },
   "devDependencies": {

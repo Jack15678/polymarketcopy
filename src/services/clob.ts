@@ -1,4 +1,4 @@
-import { ApiError, ClobClient, Side, OrderType } from "@polymarket/clob-client";
+import { ApiError, Chain, ClobClient, Side, OrderType } from "@polymarket/clob-client-v2";
 import { Wallet } from "@ethersproject/wallet";
 import { config } from "../config/index.js";
 
@@ -26,7 +26,7 @@ function getApiCreds(): { key: string; secret: string; passphrase: string } | nu
 }
 
 function getReadOnlyClobClient(): ClobClient {
-  if (!readOnlyClient) readOnlyClient = new ClobClient(config.clobUrl, config.chainId);
+  if (!readOnlyClient) readOnlyClient = new ClobClient({ host: config.clobUrl, chain: config.chainId as Chain });
   return readOnlyClient;
 }
 
@@ -85,21 +85,14 @@ export async function getClobClient(): Promise<ClobClient> {
     const signer = getSigner();
     let creds = getApiCreds();
     if (!creds && config.autoDeriveApiKey) {
-      const authOnly = new ClobClient(
-        config.clobUrl,
-        config.chainId,
+      const authOnly = new ClobClient({
+        host: config.clobUrl,
+        chain: config.chainId as Chain,
         signer,
-        undefined,
-        config.signatureType,
-        config.funderAddress,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        true
-      );
+        signatureType: config.signatureType,
+        funderAddress: config.funderAddress,
+        throwOnError: true,
+      });
       creds = await deriveOrCreateApiKey(authOnly);
       console.log("Derived API key (key=%s...)", (creds!.key ?? "").slice(0, 8));
     }
@@ -107,21 +100,15 @@ export async function getClobClient(): Promise<ClobClient> {
       throw new Error(
         "No API creds: set POLYMARKET_API_KEY/SECRET/PASSPHRASE or POLYMARKET_AUTO_DERIVE_API_KEY=true"
       );
-    client = new ClobClient(
-      config.clobUrl,
-      config.chainId,
+    client = new ClobClient({
+      host: config.clobUrl,
+      chain: config.chainId as Chain,
       signer,
       creds,
-      config.signatureType,
-      config.funderAddress,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      true
-    );
+      signatureType: config.signatureType,
+      funderAddress: config.funderAddress,
+      throwOnError: true,
+    });
     return client;
   })();
   return clientPromise;

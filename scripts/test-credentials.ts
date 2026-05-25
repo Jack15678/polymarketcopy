@@ -6,7 +6,7 @@
  */
 import "dotenv/config";
 import { Wallet } from "@ethersproject/wallet";
-import { ClobClient } from "@polymarket/clob-client";
+import { Chain, ClobClient } from "@polymarket/clob-client-v2";
 
 const pk = process.env.POLYMARKET_PRIVATE_KEY?.trim();
 const address = process.env.POLYMARKET_ADDRESS?.trim() || process.env.POLYMARKET_FUNDER_ADDRESS?.trim();
@@ -44,7 +44,13 @@ console.log("Signature type:", signatureType, signatureType === 0 ? "(EOA)" : "(
 
 async function test(sigType: number) {
   console.log(`\n[SignatureType=${sigType}] Trying to derive API key...`);
-  const authOnly = new ClobClient(clobUrl, chainId, wallet, undefined, sigType, undefined, undefined, undefined, undefined, undefined, undefined, undefined, true);
+  const authOnly = new ClobClient({
+    host: clobUrl,
+    chain: chainId as Chain,
+    signer: wallet,
+    signatureType: sigType,
+    throwOnError: true,
+  });
   try {
     const creds = await authOnly.deriveApiKey();
     if (creds.key && creds.secret && creds.passphrase) {
@@ -63,7 +69,13 @@ async function test(sigType: number) {
 
   // Try create if derive failed
   console.log("  Trying createApiKey...");
-  const authOnly2 = new ClobClient(clobUrl, chainId, wallet, undefined, sigType, undefined, undefined, undefined, undefined, undefined, undefined, undefined, true);
+  const authOnly2 = new ClobClient({
+    host: clobUrl,
+    chain: chainId as Chain,
+    signer: wallet,
+    signatureType: sigType,
+    throwOnError: true,
+  });
   try {
     const creds2 = await authOnly2.createApiKey();
     if (creds2.key && creds2.secret && creds2.passphrase) {
