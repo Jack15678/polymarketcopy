@@ -3,27 +3,23 @@ import { getTickSize, placeLimitOrder } from "../services/clob.js";
 import { config } from "../config/index.js";
 import { getCopyTarget } from "../utils/target.js";
 
-/** Snapshot state of the target's positions during copy session. */
-type PositionDir = "long" | "short";
-
 /**
- * Build initial working map from the target's current open positions.
- * Direction is inferred from currentValue: positive = long, negative = short.
+ * Build snapshot of target's open positions at copy-start.
+ * Returns Set of asset IDs that target already holds — all subsequent ops on these are skipped.
  */
-async function buildWorkingMap(user: string): Promise<Map<string, { dir: PositionDir; size: number }>> {
-  const map = new Map<string, { dir: PositionDir; size: number }>();
+async function buildSnapshot(user: string): Promise<Set<string>> {
+  const snapshot = new Set<string>();
   try {
     const positions = await getPositions(config.dataApiUrl, { user, limit: 500 });
     for (const p of positions) {
-      if (!p.asset || !p.size || p.size <= 0) continue;
-      // currentValue > 0 → long, currentValue < 0 → short
-      const dir: PositionDir = (p.currentValue ?? 0) < 0 ? "short" : "long";
-      map.set(p.asset, { dir, size: p.size });
+      if (p.asset && p.size && p.size > 0) {
+        snapshot.add(p.asset);
+      }
     }
   } catch (e) {
     console.warn("Failed to fetch initial positions:", e instanceof Error ? e.message : e);
   }
-  return map;
+  return snapshot;
 }
 
 const SEEN_CAP = 10_000;
@@ -53,12 +49,8 @@ export async function pollAndCopy(): Promise<{
   const user = getCopyTarget() || config.targetUser;
   if (!user) return { fetched: 0, copied: 0, errors: ["No target user"] };
 
-  // Build working map from target's current positions at copy start.
-  // Any asset in this map → target already held it → skip all subsequent operations on it.
-  const workingMap = await buildWorkingMap(user);
-  // Track assets that become "known" during the session (new opens we participate in).
-  // Once tracked, also skip future operations to avoid double-copying.
-  const knownAssets = new Set<string>(workingMap.keys());
+  // Snapshot of target's open positions at copy-start.
+  const snapshot = await buildSnapshot(user);
 
   const activities = await getActivity(config.dataApiUrl, {
     user,
@@ -82,18 +74,14 @@ export async function pollAndCopy(): Promise<{
     const tokenId = a.asset;
     const side = a.side;
 
-    // Skip if target already held this asset at copy-start, or we've already participated in it.
-    if (knownAssets.has(tokenId)) continue;
+    // Skip if target already held this asset at copy-start.
+    if (snapshot.has(tokenId)) continue;
 
     const price = a.price ?? 0;
     const size = a.size ?? 0;
     if (size < 0.01) continue;
 
     const orderSize = applySizeLimit(size, price);
-
-    if (!workingMap.has(tokenId)) {
-      workingMap.set(tokenId, { dir: side === "BUY" ? "long" : "short", size });
-    }
 
     let tickSize: string | null = null;
     try {
