@@ -116,6 +116,12 @@ export async function pollAndCopy(): Promise<{
       errors.push(`Skip: no orderbook for token ${tokenId.slice(0, 12)}... (market may be closed or resolved)`);
       continue;
     }
+    if (orderSize < orderConfig.minOrderSize) {
+      errors.push(
+        `Skip: order size ${orderSize} is below market minimum ${orderConfig.minOrderSize} for token ${tokenId.slice(0, 12)}...`
+      );
+      continue;
+    }
 
     const result = await placeLimitOrder(tokenId, side, price, orderSize, orderConfig);
     if (result.error) {

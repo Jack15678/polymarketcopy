@@ -68,6 +68,7 @@ console.log("---");
 try {
   const book = await readOnly.getOrderBook(tokenId);
   console.log("Orderbook tick_size:", book.tick_size);
+  console.log("Orderbook min_order_size:", book.min_order_size);
   console.log("Orderbook neg_risk:", "neg_risk" in book ? String(book.neg_risk) : "<missing>");
   console.log("Orderbook bids/asks:", book.bids?.length ?? 0, "/", book.asks?.length ?? 0);
 } catch (e) {

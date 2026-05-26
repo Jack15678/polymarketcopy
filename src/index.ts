@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { config, validateConfig } from "./config/index.js";
 import { pollAndCopy } from "./core/copy-engine.js";
+import { getClobOrderVersion } from "./services/clob.js";
 import { setCopyTarget } from "./utils/target.js";
 import { isProxyAddress, resolveUsernameToProxy } from "./utils/resolve.js";
 
@@ -50,6 +51,11 @@ async function main(): Promise<void> {
   console.log("Target:", target.slice(0, 12) + "...");
   console.log("Poll interval (ms):", config.pollIntervalMs);
   console.log("Size multiplier:", config.sizeMultiplier);
+  try {
+    console.log("CLOB order version:", await getClobOrderVersion());
+  } catch (e) {
+    console.warn("CLOB version check failed:", e instanceof Error ? e.message : e);
+  }
   console.log("---");
 
   const run = async () => {

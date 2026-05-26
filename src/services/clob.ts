@@ -15,6 +15,8 @@ let client: ClobClient | null = null;
 let clientPromise: Promise<ClobClient> | null = null;
 let readOnlyClient: ClobClient | null = null;
 
+const ORDER_VERSION_MISMATCH = "order_version_mismatch";
+
 function getSigner(): Wallet {
   return new Wallet(config.privateKey);
 }
@@ -122,8 +124,19 @@ export interface OrderBookSummary {
   neg_risk?: boolean;
 }
 
+export async function getClobOrderVersion(): Promise<number> {
+  const clob = await getClobClient();
+  return clob.getVersion();
+}
+
+function resetClobClient(): void {
+  client = null;
+  clientPromise = null;
+}
+
 export interface OrderMarketConfig {
   tickSize: string;
+  minOrderSize: number;
   negRisk?: boolean;
 }
 
@@ -149,6 +162,7 @@ export async function getOrderMarketConfig(tokenId: string): Promise<OrderMarket
   if (!book) return null;
   return {
     tickSize: book.tick_size ? toTickSize(book.tick_size) : "0.01",
+    minOrderSize: parseFloat(book.min_order_size ?? "0.01") || 0.01,
   };
 }
 
@@ -159,12 +173,12 @@ export async function placeLimitOrder(
   size: number,
   orderConfig: OrderMarketConfig
 ): Promise<{ orderID?: string; error?: string }> {
-  const clob = await getClobClient();
   const sideEnum = side === "BUY" ? Side.BUY : Side.SELL;
   const roundedPrice = roundToTick(price, parseFloat(orderConfig.tickSize));
-  const roundedSize = Math.max(0.01, Math.round(size * 100) / 100);
+  const roundedSize = Math.max(orderConfig.minOrderSize, 0.01, Math.round(size * 100) / 100);
 
-  try {
+  const postOnce = async (): Promise<{ orderID?: string; error?: string }> => {
+    const clob = await getClobClient();
     const res = await clob.createAndPostOrder(
       {
         tokenID: tokenId,
@@ -179,8 +193,22 @@ export async function placeLimitOrder(
       OrderType.GTC
     );
     return { orderID: (res as { orderID?: string })?.orderID ?? (res as { id?: string })?.id };
+  };
+
+  try {
+    return await postOnce();
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    if (isOrderVersionMismatch(msg)) {
+      resetClobClient();
+      try {
+        console.warn("CLOB order version mismatch; refreshed signing client and retrying once.");
+        return await postOnce();
+      } catch (retryError) {
+        const retryMsg = retryError instanceof Error ? retryError.message : String(retryError);
+        return { error: formatOrderVersionMismatch(retryMsg) };
+      }
+    }
     return { error: msg };
   }
 }
@@ -218,6 +246,18 @@ function roundToTick(value: number, tickSize: number): number {
   if (tickSize <= 0) return value;
   const ticks = Math.round(value / tickSize);
   return Math.max(0.0001, Math.min(0.9999, ticks * tickSize));
+}
+
+function isOrderVersionMismatch(msg: string): boolean {
+  return msg.includes(ORDER_VERSION_MISMATCH);
+}
+
+function formatOrderVersionMismatch(msg: string): string {
+  return (
+    `${msg} ` +
+    "(CLOB rejected the signed order version. Confirm the server is using @polymarket/clob-client-v2, " +
+    "has been rebuilt/restarted, and POLYMARKET_CLOB_URL is https://clob.polymarket.com.)"
+  );
 }
 
 // Market client integration notes

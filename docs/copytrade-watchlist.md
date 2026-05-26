@@ -139,21 +139,55 @@ COPY_MAX_ORDER_USD=1
 COPY_TRADES_ONLY=true
 ```
 
-### PBot-3(bitcoin)
+### 0x963137a0BA0B02EBf6F37710023Cc1B0303289A1-1764031525036
 
-- Rating: **Watch** (121/100)
-- Address: `0x74a2b82f079e12bcc25cd0d479f17979fb62e32f`
-- Leaderboard rank: 653, PnL: $10,513, Volume: $90,112
-- Account age: 151 days
-- Current open positions: 4, current value: $348, max position share: 44.3%
-- Recent trades: 500, trades/day: 125.00, avg trade notional: $49.73
-- Stability: realized MDD 24.8%, profitable weeks 100.0%, PnL concentration 10.6%, closed win rate 55.1%, avg win/loss 1.22
-- Current unrealized drawdown: 10.0%
+- Rating: **Watch** (119/100)
+- Address: `0x963137a0ba0b02ebf6f37710023cc1b0303289a1`
+- Leaderboard rank: 566, PnL: $12,290, Volume: $28,708
+- Account age: 180 days
+- Current open positions: 4, current value: $87,850, max position share: 41.7%
+- Recent trades: 500, trades/day: 25.00, avg trade notional: $772
+- Stability: realized MDD 29.0%, profitable weeks 83.3%, PnL concentration 37.9%, closed win rate 78.0%, avg win/loss 0.84
+- Current unrealized drawdown: 0.0%
 
 **Why it passed**
 - estimated account age is at least 60 days
 - open positions are in the 3-10 target range
 - recent trade history shows ongoing activity
+- average trade size can be copied with a practical small-account cap
+- at least half of observed weeks were profitable
+- realized profits are not dominated by one closed position
+- closed-position win rate is at least 45%
+- current unrealized drawdown is below 20% of exposure
+
+**Warnings**
+- current open-position value is large, so copying requires a small multiplier
+- largest position is concentrated but still in the watch range
+- realized max drawdown is in the watch range
+
+**Suggested test settings**
+
+```env
+COPY_TARGET_USER=0x963137a0ba0b02ebf6f37710023cc1b0303289a1
+COPY_SIZE_MULTIPLIER=0.0013
+COPY_MAX_ORDER_USD=1
+COPY_TRADES_ONLY=true
+```
+
+### ashishui(仓位较小可以跟，但都是很小额)
+
+- Rating: **Watch** (113/100)
+- Address: `0x6161740411c079f743470d678ade504d610f8ad9`
+- Leaderboard rank: 327, PnL: $2,165, Volume: $4,545,879
+- Account age: 144 days
+- Current open positions: 18, current value: $1,062, max position share: 43.2%
+- Recent trades: 42, trades/day: 0.29, avg trade notional: $57.06
+- Stability: realized MDD 2.9%, profitable weeks 77.8%, PnL concentration 29.2%, closed win rate 84.2%, avg win/loss 6.56
+- Current unrealized drawdown: 0.9%
+
+**Why it passed**
+- estimated account age is at least 60 days
+- current open-position value is in the 500-10,000 USDC target range
 - average trade size can be copied with a practical small-account cap
 - realized max drawdown is below 25%
 - at least half of observed weeks were profitable
@@ -162,32 +196,32 @@ COPY_TRADES_ONLY=true
 - current unrealized drawdown is below 20% of exposure
 
 **Warnings**
-- current open-position value is small, so the account may be too inactive or undercapitalized
+- open positions are manageable but above the preferred range
 - largest position is concentrated but still in the watch range
+- recent activity is light
 
 **Suggested test settings**
 
 ```env
-COPY_TARGET_USER=0x74a2b82f079e12bcc25cd0d479f17979fb62e32f
-COPY_SIZE_MULTIPLIER=0.02
+COPY_TARGET_USER=0x6161740411c079f743470d678ade504d610f8ad9
+COPY_SIZE_MULTIPLIER=0.018
 COPY_MAX_ORDER_USD=1
 COPY_TRADES_ONLY=true
 ```
 
-### 0x2a9c77ED09d86C2AD2CeD0a60c8b5b2A23ACc8Cf-1774329787224(bitcoin)
+### 0x75cc3b63a2f2423085e10706c78b494017b93ce1 (感觉这个不错哦)
 
-- Rating: **Watch** (120/100)
-- Address: `0x2a9c77ed09d86c2ad2ced0a60c8b5b2a23acc8cf`
-- Leaderboard rank: 528, PnL: $14,683, Volume: $2,960,412
-- Account age: 61 days
-- Current open positions: 14, current value: $841, max position share: 29.7%
-- Recent trades: 500, trades/day: 71.43, avg trade notional: $435
-- Stability: realized MDD 0.0%, profitable weeks 100.0%, PnL concentration 20.7%, closed win rate 100.0%, avg win/loss n/a
-- Current unrealized drawdown: 0.0%
+- Rating: **Watch** (111/100)
+- Address: `0x75cc3b63a2f2423085e10706c78b494017b93ce1`
+- Leaderboard rank: 231, PnL: $79,845, Volume: $3,526,094
+- Account age: 40 days
+- Current open positions: 15, current value: $217, max position share: 33.6%
+- Recent trades: 500, trades/day: 500.00, avg trade notional: $5.99
+- Stability: realized MDD 23.6%, profitable weeks 100.0%, PnL concentration 10.1%, closed win rate 52.0%, avg win/loss 1.36
+- Current unrealized drawdown: 10.0%
 
 **Why it passed**
-- estimated account age is at least 60 days
-- current open-position value is in the 500-10,000 USDC target range
+- estimated account age is at least 30 days
 - largest position is below 35% of current exposure
 - recent trade history shows ongoing activity
 - average trade size can be copied with a practical small-account cap
@@ -199,13 +233,13 @@ COPY_TRADES_ONLY=true
 
 **Warnings**
 - open positions are manageable but above the preferred range
-- more than half of open positions are below 5 USDC
+- current open-position value is small, so the account may be too inactive or undercapitalized
 
 **Suggested test settings**
 
 ```env
-COPY_TARGET_USER=0x2a9c77ed09d86c2ad2ced0a60c8b5b2a23acc8cf
-COPY_SIZE_MULTIPLIER=0.0023
+COPY_TARGET_USER=0x75cc3b63a2f2423085e10706c78b494017b93ce1
+COPY_SIZE_MULTIPLIER=0.17
 COPY_MAX_ORDER_USD=1
 COPY_TRADES_ONLY=true
 ```
