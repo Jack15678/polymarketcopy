@@ -160,9 +160,23 @@ export async function getTickSize(tokenId: string): Promise<string | null> {
 export async function getOrderMarketConfig(tokenId: string): Promise<OrderMarketConfig | null> {
   const book = await getOrderBook(tokenId);
   if (!book) return null;
+  const c = getReadOnlyClobClient();
+  let tickSize: TickSize = book.tick_size ? toTickSize(book.tick_size) : "0.01";
+  let negRisk = book.neg_risk;
+  try {
+    tickSize = toTickSize(await c.getTickSize(tokenId));
+  } catch {
+    // Fall back to orderbook metadata when the dedicated tick-size endpoint is unavailable.
+  }
+  try {
+    negRisk = await c.getNegRisk(tokenId);
+  } catch {
+    // negRisk is optional for standard markets; orderbook metadata is enough as a fallback.
+  }
   return {
-    tickSize: book.tick_size ? toTickSize(book.tick_size) : "0.01",
+    tickSize,
     minOrderSize: parseFloat(book.min_order_size ?? "0.01") || 0.01,
+    ...(negRisk === undefined ? {} : { negRisk }),
   };
 }
 
@@ -244,8 +258,13 @@ export async function placeMarketOrder(
 
 function roundToTick(value: number, tickSize: number): number {
   if (tickSize <= 0) return value;
-  const ticks = Math.round(value / tickSize);
-  return Math.max(0.0001, Math.min(0.9999, ticks * tickSize));
+  const decimals = tickSize.toString().split(".")[1]?.length ?? 0;
+  const minPrice = tickSize;
+  const maxPrice = 1 - tickSize;
+  const bounded = Math.max(minPrice, Math.min(maxPrice, value));
+  const ticks = Math.round(bounded / tickSize);
+  const rounded = ticks * tickSize;
+  return Number(Math.max(minPrice, Math.min(maxPrice, rounded)).toFixed(decimals));
 }
 
 function isOrderVersionMismatch(msg: string): boolean {

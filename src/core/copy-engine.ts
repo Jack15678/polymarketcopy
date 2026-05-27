@@ -1,30 +1,30 @@
-import { getActivity, getPositions, tradeEventKey } from "../services/data-api.js";
+import { getActivity, getPositions, tradeEventKey, type Position } from "../services/data-api.js";
 import { getOrderMarketConfig, placeLimitOrder } from "../services/clob.js";
 import { config } from "../config/index.js";
 import { getCopyTarget } from "../utils/target.js";
 
 /**
- * Build snapshot of target's open positions at copy-start.
- * Returns Set of asset IDs that target already holds — all subsequent ops on these are skipped.
+ * Build snapshot of open positions at copy-start.
  */
-async function buildSnapshot(user: string): Promise<Set<string>> {
-  const snapshot = new Set<string>();
+async function buildPositionSnapshot(user: string, label: string): Promise<Map<string, Position>> {
+  const snapshot = new Map<string, Position>();
   try {
     const positions = await getPositions(config.dataApiUrl, { user, limit: 500 });
     for (const p of positions) {
       if (p.asset && p.size && p.size > 0) {
-        snapshot.add(p.asset);
+        snapshot.set(p.asset, p);
       }
     }
   } catch (e) {
-    console.warn("Failed to fetch initial positions:", e instanceof Error ? e.message : e);
+    console.warn(`Failed to fetch initial ${label} positions:`, e instanceof Error ? e.message : e);
   }
   return snapshot;
 }
 
 const SEEN_CAP = 10_000;
 const seen = new Set<string>();
-let startupSnapshotPromise: Promise<Set<string>> | null = null;
+let targetSnapshotPromise: Promise<Map<string, Position>> | null = null;
+let followerSnapshotPromise: Promise<Map<string, Position>> | null = null;
 let warmedUp = false;
 
 function trimSeen(): void {
@@ -33,14 +33,50 @@ function trimSeen(): void {
   for (let i = 0; i < arr.length - SEEN_CAP; i++) seen.delete(arr[i]!);
 }
 
-function getStartupSnapshot(user: string): Promise<Set<string>> {
-  if (!startupSnapshotPromise) {
-    startupSnapshotPromise = buildSnapshot(user).then((snapshot) => {
-      console.log(`Initialized startup position snapshot: ${snapshot.size} assets`);
+function getTargetSnapshot(user: string): Promise<Map<string, Position>> {
+  if (!targetSnapshotPromise) {
+    targetSnapshotPromise = buildPositionSnapshot(user, "target").then((snapshot) => {
+      console.log(`Initialized target startup position snapshot: ${snapshot.size} assets`);
       return snapshot;
     });
   }
-  return startupSnapshotPromise;
+  return targetSnapshotPromise;
+}
+
+function getFollowerSnapshot(): Promise<Map<string, Position>> {
+  if (!followerSnapshotPromise) {
+    followerSnapshotPromise = buildPositionSnapshot(config.funderAddress, "follower").then((snapshot) => {
+      console.log(`Initialized follower startup position snapshot: ${snapshot.size} assets`);
+      return snapshot;
+    });
+  }
+  return followerSnapshotPromise;
+}
+
+function describePosition(p: Position): string {
+  const title = p.title ? ` ${p.title.slice(0, 50)}` : "";
+  const outcome = p.outcome ? ` / ${p.outcome}` : "";
+  return `${p.asset?.slice(0, 12)}... size=${p.size ?? 0}${outcome}${title}`;
+}
+
+function logStartupPositionComparison(target: Map<string, Position>, follower: Map<string, Position>): void {
+  const shared = [...target.keys()].filter((asset) => follower.has(asset));
+  const targetOnly = [...target.keys()].filter((asset) => !follower.has(asset));
+  const followerOnly = [...follower.keys()].filter((asset) => !target.has(asset));
+
+  console.log(
+    `Startup position compare: target=${target.size}, follower=${follower.size}, shared=${shared.length}, targetOnly=${targetOnly.length}, followerOnly=${followerOnly.length}`
+  );
+  for (const asset of shared.slice(0, 20)) {
+    const t = target.get(asset)!;
+    const f = follower.get(asset)!;
+    console.log(
+      `Startup shared asset: ${asset.slice(0, 12)}... targetSize=${t.size ?? 0} followerSize=${f.size ?? 0} ${t.title ?? ""}`
+    );
+  }
+  for (const asset of targetOnly.slice(0, 20)) {
+    console.log(`Startup target-only skip asset: ${describePosition(target.get(asset)!)}`);
+  }
 }
 
 function applySizeLimit(size: number, price: number): number {
@@ -52,6 +88,17 @@ function applySizeLimit(size: number, price: number): number {
   return Math.max(0.01, Math.round(s * 100) / 100);
 }
 
+async function getFollowerPositionSize(tokenId: string): Promise<number> {
+  if (!config.funderAddress) return 0;
+  const positions = await getPositions(config.dataApiUrl, {
+    user: config.funderAddress,
+    limit: 500,
+    sizeThreshold: 0,
+  });
+  const position = positions.find((p) => p.asset === tokenId);
+  return Math.max(0, position?.size ?? 0);
+}
+
 export async function pollAndCopy(): Promise<{
   fetched: number;
   copied: number;
@@ -61,8 +108,9 @@ export async function pollAndCopy(): Promise<{
   const user = getCopyTarget() || config.targetUser;
   if (!user) return { fetched: 0, copied: 0, errors: ["No target user"] };
 
-  // Snapshot of target's open positions at copy-start.
-  const snapshot = await getStartupSnapshot(user);
+  const targetSnapshot = await getTargetSnapshot(user);
+  const followerSnapshot = await getFollowerSnapshot();
+  if (!warmedUp) logStartupPositionComparison(targetSnapshot, followerSnapshot);
 
   const activities = await getActivity(config.dataApiUrl, {
     user,
@@ -97,14 +145,26 @@ export async function pollAndCopy(): Promise<{
     const tokenId = a.asset;
     const side = a.side;
 
-    // Skip if target already held this asset at copy-start.
-    if (snapshot.has(tokenId)) continue;
-
     const price = a.price ?? 0;
     const size = a.size ?? 0;
     if (size < 0.01) continue;
 
-    const orderSize = applySizeLimit(size, price);
+    // For positions the target already held at copy-start, only follow that token
+    // if the follower also held the exact same asset at copy-start.
+    if (targetSnapshot.has(tokenId) && !followerSnapshot.has(tokenId)) continue;
+
+    let orderSize = applySizeLimit(size, price);
+    if (side === "SELL") {
+      let followerPositionSize = 0;
+      try {
+        followerPositionSize = await getFollowerPositionSize(tokenId);
+      } catch (e) {
+        errors.push(`follower position ${tokenId}: ${e instanceof Error ? e.message : e}`);
+        continue;
+      }
+      if (followerPositionSize < 0.01) continue;
+      orderSize = Math.min(orderSize, Math.round(followerPositionSize * 100) / 100);
+    }
 
     let orderConfig: Awaited<ReturnType<typeof getOrderMarketConfig>> = null;
     try {
