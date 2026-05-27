@@ -3,5 +3,6 @@ dist/
 .npm-cache/
 .env
 *.log
+.copytrade-state.json
 .DS_Store
 .claude

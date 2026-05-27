@@ -273,7 +273,9 @@ export function tradeEventKey(a: Activity): string {
   const tx = a.transactionHash ?? "";
   const asset = a.asset ?? "";
   const side = a.side ?? "";
+  const price = a.price ?? "";
+  const size = a.size ?? "";
   const ts = a.timestamp ?? 0;
-  if (tx) return `${tx}:${asset}:${side}`;
-  return `:${ts}:${asset}:${side}`;
+  if (tx) return `${tx}:${asset}:${side}:${price}:${size}`;
+  return `:${ts}:${asset}:${side}:${price}:${size}`;
 }

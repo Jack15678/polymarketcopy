@@ -1,7 +1,15 @@
-import { getActivity, getPositions, tradeEventKey, type Position } from "../services/data-api.js";
+import { readFile, writeFile } from "node:fs/promises";
+import { getActivity, getPositions, tradeEventKey, type Activity, type Position } from "../services/data-api.js";
 import { getOrderMarketConfig, placeLimitOrder } from "../services/clob.js";
 import { config } from "../config/index.js";
 import { getCopyTarget } from "../utils/target.js";
+
+interface CopyState {
+  managedAssets: string[];
+}
+
+const STATE_FILE = ".copytrade-state.json";
+let statePromise: Promise<CopyState> | null = null;
 
 /**
  * Build snapshot of open positions at copy-start.
@@ -26,6 +34,35 @@ const seen = new Set<string>();
 let targetSnapshotPromise: Promise<Map<string, Position>> | null = null;
 let followerSnapshotPromise: Promise<Map<string, Position>> | null = null;
 let warmedUp = false;
+
+async function loadState(): Promise<CopyState> {
+  if (!statePromise) {
+    statePromise = readFile(STATE_FILE, "utf8")
+      .then((raw) => {
+        const parsed = JSON.parse(raw) as Partial<CopyState>;
+        return {
+          managedAssets: Array.isArray(parsed.managedAssets)
+            ? parsed.managedAssets.filter((asset): asset is string => typeof asset === "string")
+            : [],
+        };
+      })
+      .catch(() => ({ managedAssets: [] }));
+  }
+  return statePromise;
+}
+
+async function saveState(state: CopyState): Promise<void> {
+  state.managedAssets = [...new Set(state.managedAssets)];
+  await writeFile(STATE_FILE, `${JSON.stringify(state, null, 2)}\n`);
+}
+
+async function rememberManagedAsset(tokenId: string): Promise<void> {
+  const state = await loadState();
+  if (state.managedAssets.includes(tokenId)) return;
+  state.managedAssets.push(tokenId);
+  await saveState(state);
+  console.log(`State: tracking managed asset ${tokenId.slice(0, 12)}...`);
+}
 
 function trimSeen(): void {
   if (seen.size <= SEEN_CAP) return;
@@ -77,6 +114,9 @@ function logStartupPositionComparison(target: Map<string, Position>, follower: M
   for (const asset of targetOnly.slice(0, 20)) {
     console.log(`Startup target-only skip asset: ${describePosition(target.get(asset)!)}`);
   }
+  for (const asset of followerOnly.slice(0, 20)) {
+    console.log(`Startup follower-only asset: ${describePosition(follower.get(asset)!)}`);
+  }
 }
 
 function applySizeLimit(size: number, price: number): number {
@@ -99,6 +139,116 @@ async function getFollowerPositionSize(tokenId: string): Promise<number> {
   return Math.max(0, position?.size ?? 0);
 }
 
+async function getManagedAssets(
+  targetSnapshot: Map<string, Position>,
+  followerSnapshot: Map<string, Position>,
+  log = false
+): Promise<Set<string>> {
+  const state = await loadState();
+  const managed = new Set(state.managedAssets);
+  let changed = false;
+  for (const asset of targetSnapshot.keys()) {
+    if (followerSnapshot.has(asset)) {
+      const before = managed.size;
+      managed.add(asset);
+      changed ||= managed.size !== before;
+    }
+  }
+  if (changed) {
+    state.managedAssets = [...managed];
+    await saveState(state);
+  }
+  if (log) {
+    console.log(
+      `Managed assets: ${managed.size} (${[...managed]
+        .slice(0, 10)
+        .map((a) => `${a.slice(0, 12)}...`)
+        .join(", ")})`
+    );
+  }
+  return managed;
+}
+
+async function fetchCurrentPositionMap(user: string, label: string): Promise<Map<string, Position>> {
+  try {
+    const positions = await getPositions(config.dataApiUrl, {
+      user,
+      limit: 500,
+      sizeThreshold: 0,
+    });
+    const map = new Map<string, Position>();
+    for (const p of positions) {
+      if (p.asset && (p.size ?? 0) > 0) map.set(p.asset, p);
+    }
+    return map;
+  } catch (e) {
+    throw new Error(`${label} positions: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
+function getRecentTargetSellAssets(activities: Activity[]): Set<string> {
+  const assets = new Set<string>();
+  for (const a of activities) {
+    if (a.type === "TRADE" && a.side === "SELL" && a.asset) assets.add(a.asset);
+  }
+  return assets;
+}
+
+async function reconcileManagedExits(
+  user: string,
+  managedAssets: Set<string>,
+  recentTargetSellAssets: Set<string>,
+  errors: string[]
+): Promise<number> {
+  const exitCandidates = new Set([...managedAssets, ...recentTargetSellAssets]);
+  if (exitCandidates.size === 0) return 0;
+
+  const targetCurrent = await fetchCurrentPositionMap(user, "target");
+  const followerCurrent = await fetchCurrentPositionMap(config.funderAddress, "follower");
+  let copied = 0;
+
+  for (const tokenId of exitCandidates) {
+    const followerPosition = followerCurrent.get(tokenId);
+    if (!followerPosition) continue;
+    if (targetCurrent.has(tokenId)) continue;
+
+    const size = Math.round((followerPosition.size ?? 0) * 100) / 100;
+    const price = followerPosition.curPrice ?? 0;
+    if (size < 0.01 || price <= 0) continue;
+
+    let orderConfig: Awaited<ReturnType<typeof getOrderMarketConfig>> = null;
+    try {
+      orderConfig = await getOrderMarketConfig(tokenId);
+    } catch (e) {
+      errors.push(`reconcile market config ${tokenId}: ${e instanceof Error ? e.message : e}`);
+    }
+    if (orderConfig === null) {
+      errors.push(`Reconcile skip: no orderbook for ${tokenId.slice(0, 12)}...`);
+      continue;
+    }
+    if (size < orderConfig.minOrderSize) {
+      errors.push(
+        `Reconcile skip: follower size ${size} is below market minimum ${orderConfig.minOrderSize} for ${tokenId.slice(0, 12)}...`
+      );
+      continue;
+    }
+
+    console.log(
+      `Reconcile exit: target no longer holds ${tokenId.slice(0, 12)}..., selling follower size=${size} @ ${price}${
+        recentTargetSellAssets.has(tokenId) && !managedAssets.has(tokenId) ? " (recent target SELL recovery)" : ""
+      }`
+    );
+    const result = await placeLimitOrder(tokenId, "SELL", price, size, orderConfig);
+    if (result.error) {
+      errors.push(`${tokenId} RECONCILE_SELL: ${result.error}`);
+    } else {
+      copied++;
+    }
+  }
+
+  return copied;
+}
+
 export async function pollAndCopy(): Promise<{
   fetched: number;
   copied: number;
@@ -111,6 +261,7 @@ export async function pollAndCopy(): Promise<{
   const targetSnapshot = await getTargetSnapshot(user);
   const followerSnapshot = await getFollowerSnapshot();
   if (!warmedUp) logStartupPositionComparison(targetSnapshot, followerSnapshot);
+  const managedAssets = await getManagedAssets(targetSnapshot, followerSnapshot, !warmedUp);
 
   const activities = await getActivity(config.dataApiUrl, {
     user,
@@ -120,6 +271,14 @@ export async function pollAndCopy(): Promise<{
     sortBy: "TIMESTAMP",
     sortDirection: "DESC",
   });
+  const recentTargetSellAssets = getRecentTargetSellAssets(activities);
+
+  let copied = 0;
+  try {
+    copied += await reconcileManagedExits(user, managedAssets, recentTargetSellAssets, errors);
+  } catch (e) {
+    errors.push(e instanceof Error ? e.message : String(e));
+  }
 
   if (!warmedUp) {
     for (const a of activities) {
@@ -129,10 +288,9 @@ export async function pollAndCopy(): Promise<{
     }
     warmedUp = true;
     console.log(`Initialized recent activity baseline: ${seen.size} trades`);
-    return { fetched: activities.length, copied: 0, errors };
+    return { fetched: activities.length, copied, errors };
   }
 
-  let copied = 0;
   for (let i = activities.length - 1; i >= 0; i--) {
     const a = activities[i]!;
     if (a.type !== "TRADE" || !a.asset || !a.side) continue;
@@ -190,6 +348,7 @@ export async function pollAndCopy(): Promise<{
       console.log(
         `Copied: ${side} ${orderSize} @ ${price} token=${tokenId.slice(0, 10)}... orderID=${result.orderID ?? "ok"}`
       );
+      if (side === "BUY") await rememberManagedAsset(tokenId);
       copied++;
     }
   }
