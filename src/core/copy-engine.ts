@@ -6,6 +6,7 @@ import { getCopyTarget } from "../utils/target.js";
 
 interface CopyState {
   managedAssets: string[];
+  pendingExitAssets: string[];
 }
 
 const STATE_FILE = ".copytrade-state.json";
@@ -44,15 +45,19 @@ async function loadState(): Promise<CopyState> {
           managedAssets: Array.isArray(parsed.managedAssets)
             ? parsed.managedAssets.filter((asset): asset is string => typeof asset === "string")
             : [],
+          pendingExitAssets: Array.isArray(parsed.pendingExitAssets)
+            ? parsed.pendingExitAssets.filter((asset): asset is string => typeof asset === "string")
+            : [],
         };
       })
-      .catch(() => ({ managedAssets: [] }));
+      .catch(() => ({ managedAssets: [], pendingExitAssets: [] }));
   }
   return statePromise;
 }
 
 async function saveState(state: CopyState): Promise<void> {
   state.managedAssets = [...new Set(state.managedAssets)];
+  state.pendingExitAssets = [...new Set(state.pendingExitAssets)];
   await writeFile(STATE_FILE, `${JSON.stringify(state, null, 2)}\n`);
 }
 
@@ -62,6 +67,19 @@ async function rememberManagedAsset(tokenId: string): Promise<void> {
   state.managedAssets.push(tokenId);
   await saveState(state);
   console.log(`State: tracking managed asset ${tokenId.slice(0, 12)}...`);
+}
+
+async function markPendingExit(tokenId: string, reason: string): Promise<void> {
+  const state = await loadState();
+  if (state.pendingExitAssets.includes(tokenId)) return;
+  state.pendingExitAssets.push(tokenId);
+  await saveState(state);
+  console.log(`State: pending exit ${tokenId.slice(0, 12)}... (${reason})`);
+}
+
+async function getPendingExitAssets(): Promise<Set<string>> {
+  const state = await loadState();
+  return new Set(state.pendingExitAssets);
 }
 
 function trimSeen(): void {
@@ -126,6 +144,10 @@ function applySizeLimit(size: number, price: number): number {
     if (notional > config.maxOrderUsd) s = config.maxOrderUsd / price;
   }
   return Math.max(0.01, Math.round(s * 100) / 100);
+}
+
+function floorOrderSize(size: number): number {
+  return Math.floor(size * 100) / 100;
 }
 
 async function getFollowerPositionSize(tokenId: string): Promise<number> {
@@ -199,20 +221,24 @@ async function reconcileManagedExits(
   managedAssets: Set<string>,
   recentTargetSellAssets: Set<string>,
   errors: string[]
-): Promise<number> {
+): Promise<{ copied: number; handledAssets: Set<string> }> {
   const exitCandidates = new Set([...managedAssets, ...recentTargetSellAssets]);
-  if (exitCandidates.size === 0) return 0;
+  const handledAssets = new Set<string>();
+  if (exitCandidates.size === 0) return { copied: 0, handledAssets };
 
   const targetCurrent = await fetchCurrentPositionMap(user, "target");
   const followerCurrent = await fetchCurrentPositionMap(config.funderAddress, "follower");
+  const pendingExitAssets = await getPendingExitAssets();
   let copied = 0;
 
   for (const tokenId of exitCandidates) {
     const followerPosition = followerCurrent.get(tokenId);
     if (!followerPosition) continue;
     if (targetCurrent.has(tokenId)) continue;
+    handledAssets.add(tokenId);
+    if (pendingExitAssets.has(tokenId)) continue;
 
-    const size = Math.round((followerPosition.size ?? 0) * 100) / 100;
+    const size = floorOrderSize(followerPosition.size ?? 0);
     const price = followerPosition.curPrice ?? 0;
     if (size < 0.01 || price <= 0) continue;
 
@@ -224,12 +250,14 @@ async function reconcileManagedExits(
     }
     if (orderConfig === null) {
       errors.push(`Reconcile skip: no orderbook for ${tokenId.slice(0, 12)}...`);
+      await markPendingExit(tokenId, "no live orderbook for exit");
       continue;
     }
     if (size < orderConfig.minOrderSize) {
       errors.push(
         `Reconcile skip: follower size ${size} is below market minimum ${orderConfig.minOrderSize} for ${tokenId.slice(0, 12)}...`
       );
+      await markPendingExit(tokenId, "exit size below market minimum");
       continue;
     }
 
@@ -241,12 +269,27 @@ async function reconcileManagedExits(
     const result = await placeLimitOrder(tokenId, "SELL", price, size, orderConfig);
     if (result.error) {
       errors.push(`${tokenId} RECONCILE_SELL: ${result.error}`);
+      if (
+        result.error.includes("sum of active orders") ||
+        result.error.includes("not enough balance / allowance")
+      ) {
+        await markPendingExit(tokenId, "active sell order already locks balance");
+      } else if (
+        result.error.includes("orderbook") ||
+        result.error.includes("does not exist")
+      ) {
+        await markPendingExit(tokenId, "no live orderbook for exit");
+      }
     } else {
+      console.log(
+        `Reconcile exit order placed: token=${tokenId.slice(0, 12)}... orderID=${result.orderID ?? "ok"}`
+      );
+      await markPendingExit(tokenId, "sell order placed");
       copied++;
     }
   }
 
-  return copied;
+  return { copied, handledAssets };
 }
 
 export async function pollAndCopy(): Promise<{
@@ -274,8 +317,11 @@ export async function pollAndCopy(): Promise<{
   const recentTargetSellAssets = getRecentTargetSellAssets(activities);
 
   let copied = 0;
+  let reconcileHandledAssets = new Set<string>();
   try {
-    copied += await reconcileManagedExits(user, managedAssets, recentTargetSellAssets, errors);
+    const reconcileResult = await reconcileManagedExits(user, managedAssets, recentTargetSellAssets, errors);
+    copied += reconcileResult.copied;
+    reconcileHandledAssets = reconcileResult.handledAssets;
   } catch (e) {
     errors.push(e instanceof Error ? e.message : String(e));
   }
@@ -302,14 +348,15 @@ export async function pollAndCopy(): Promise<{
 
     const tokenId = a.asset;
     const side = a.side;
+    if (side === "SELL" && reconcileHandledAssets.has(tokenId)) continue;
 
     const price = a.price ?? 0;
     const size = a.size ?? 0;
     if (size < 0.01) continue;
 
-    // For positions the target already held at copy-start, only follow that token
-    // if the follower also held the exact same asset at copy-start.
-    if (targetSnapshot.has(tokenId) && !followerSnapshot.has(tokenId)) continue;
+    // If the target already held this token at startup and the follower did not,
+    // ignore later activity for that startup-only position.
+    if (targetSnapshot.has(tokenId) && !followerSnapshot.has(tokenId) && !managedAssets.has(tokenId)) continue;
 
     let orderSize = applySizeLimit(size, price);
     if (side === "SELL") {
@@ -321,7 +368,7 @@ export async function pollAndCopy(): Promise<{
         continue;
       }
       if (followerPositionSize < 0.01) continue;
-      orderSize = Math.min(orderSize, Math.round(followerPositionSize * 100) / 100);
+      orderSize = Math.min(orderSize, floorOrderSize(followerPositionSize));
     }
 
     let orderConfig: Awaited<ReturnType<typeof getOrderMarketConfig>> = null;
@@ -344,11 +391,22 @@ export async function pollAndCopy(): Promise<{
     const result = await placeLimitOrder(tokenId, side, price, orderSize, orderConfig);
     if (result.error) {
       errors.push(`${tokenId} ${side}: ${result.error}`);
+      if (side === "SELL") {
+        if (
+          result.error.includes("sum of active orders") ||
+          result.error.includes("not enough balance / allowance")
+        ) {
+          await markPendingExit(tokenId, "active sell order already locks balance");
+        } else if (result.error.includes("orderbook") || result.error.includes("does not exist")) {
+          await markPendingExit(tokenId, "no live orderbook for exit");
+        }
+      }
     } else {
       console.log(
         `Copied: ${side} ${orderSize} @ ${price} token=${tokenId.slice(0, 10)}... orderID=${result.orderID ?? "ok"}`
       );
       if (side === "BUY") await rememberManagedAsset(tokenId);
+      if (side === "SELL") await markPendingExit(tokenId, "sell order placed");
       copied++;
     }
   }

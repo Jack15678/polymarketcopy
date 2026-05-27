@@ -189,7 +189,10 @@ export async function placeLimitOrder(
 ): Promise<{ orderID?: string; error?: string }> {
   const sideEnum = side === "BUY" ? Side.BUY : Side.SELL;
   const roundedPrice = roundToTick(price, parseFloat(orderConfig.tickSize));
-  const roundedSize = Math.max(orderConfig.minOrderSize, 0.01, Math.round(size * 100) / 100);
+  const roundedSize =
+    side === "SELL"
+      ? Math.max(0.01, Math.floor(size * 100) / 100)
+      : Math.max(orderConfig.minOrderSize, 0.01, Math.round(size * 100) / 100);
 
   const postOnce = async (): Promise<{ orderID?: string; error?: string }> => {
     const clob = await getClobClient();
