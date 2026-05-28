@@ -111,7 +111,13 @@ function getFollowerSnapshot(): Promise<Map<string, Position>> {
 function describePosition(p: Position): string {
   const title = p.title ? ` ${p.title.slice(0, 50)}` : "";
   const outcome = p.outcome ? ` / ${p.outcome}` : "";
-  return `${p.asset?.slice(0, 12)}... size=${p.size ?? 0}${outcome}${title}`;
+  const price = p.curPrice == null ? "" : ` price=${p.curPrice}`;
+  return `${p.asset?.slice(0, 12)}... size=${p.size ?? 0}${price}${outcome}${title}`;
+}
+
+function isResolvedLikePosition(p: Position): boolean {
+  const price = p.curPrice;
+  return price != null && (price <= 0.01 || price >= 0.99);
 }
 
 function logStartupPositionComparison(target: Map<string, Position>, follower: Map<string, Position>): void {
@@ -133,7 +139,12 @@ function logStartupPositionComparison(target: Map<string, Position>, follower: M
     console.log(`Startup target-only skip asset: ${describePosition(target.get(asset)!)}`);
   }
   for (const asset of followerOnly.slice(0, 20)) {
-    console.log(`Startup follower-only asset: ${describePosition(follower.get(asset)!)}`);
+    const position = follower.get(asset)!;
+    console.log(
+      `Startup follower-only asset: ${describePosition(position)}${
+        isResolvedLikePosition(position) ? " (resolved-like, cleanup ignored)" : ""
+      }`
+    );
   }
 }
 
@@ -277,8 +288,8 @@ async function reconcileManagedExits(
   const targetCurrent = await fetchCurrentPositionMap(user, "target");
   const followerCurrent = await fetchCurrentPositionMap(config.funderAddress, "follower");
   if (config.exitFollowerOnly) {
-    for (const tokenId of followerCurrent.keys()) {
-      if (!targetCurrent.has(tokenId)) exitCandidates.add(tokenId);
+    for (const [tokenId, position] of followerCurrent) {
+      if (!targetCurrent.has(tokenId) && !isResolvedLikePosition(position)) exitCandidates.add(tokenId);
     }
   }
   if (exitCandidates.size === 0) return { copied: 0, handledAssets };
@@ -291,7 +302,10 @@ async function reconcileManagedExits(
     if (!followerPosition) continue;
     if (targetCurrent.has(tokenId)) continue;
     handledAssets.add(tokenId);
-    if (pendingExitAssets.has(tokenId)) continue;
+    if (pendingExitAssets.has(tokenId)) {
+      console.log(`Reconcile skip: pending exit already recorded for ${tokenId.slice(0, 12)}...`);
+      continue;
+    }
 
     const size = floorOrderSize(followerPosition.size ?? 0);
     const price = followerPosition.curPrice ?? 0;
