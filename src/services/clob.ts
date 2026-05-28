@@ -1,4 +1,4 @@
-import { ApiError, Chain, ClobClient, Side, OrderType } from "@polymarket/clob-client-v2";
+import { ApiError, AssetType, Chain, ClobClient, Side, OrderType } from "@polymarket/clob-client-v2";
 import { Wallet } from "@ethersproject/wallet";
 import { config } from "../config/index.js";
 
@@ -127,6 +127,14 @@ export interface OrderBookSummary {
 export async function getClobOrderVersion(): Promise<number> {
   const clob = await getClobClient();
   return clob.getVersion();
+}
+
+export async function getCollateralBalanceUsd(): Promise<number> {
+  const clob = await getClobClient();
+  const res = await clob.getBalanceAllowance({ asset_type: AssetType.COLLATERAL });
+  const raw = Number((res as { balance?: string | number })?.balance ?? 0);
+  if (!Number.isFinite(raw) || raw <= 0) return 0;
+  return raw / 1_000_000;
 }
 
 function resetClobClient(): void {

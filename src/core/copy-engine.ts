@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { getActivity, getPositions, tradeEventKey, type Activity, type Position } from "../services/data-api.js";
-import { getOrderMarketConfig, placeLimitOrder } from "../services/clob.js";
+import { getCollateralBalanceUsd, getOrderMarketConfig, placeLimitOrder } from "../services/clob.js";
 import { config } from "../config/index.js";
 import { getCopyTarget } from "../utils/target.js";
 
@@ -159,6 +159,55 @@ async function getFollowerPositionSize(tokenId: string): Promise<number> {
   });
   const position = positions.find((p) => p.asset === tokenId);
   return Math.max(0, position?.size ?? 0);
+}
+
+function positionValue(position: Position): number {
+  const currentValue = position.currentValue ?? 0;
+  if (Number.isFinite(currentValue) && currentValue > 0) return currentValue;
+  const size = position.size ?? 0;
+  const price = position.curPrice ?? position.avgPrice ?? 0;
+  return Number.isFinite(size * price) ? size * price : 0;
+}
+
+async function wouldExceedMaxPositionPct(tokenId: string, buyNotional: number): Promise<{
+  exceeds: boolean;
+  pct: number;
+  maxPct: number;
+  positionValue: number;
+  accountValue: number;
+}> {
+  const maxPct = config.maxPositionPct;
+  if (maxPct <= 0 || buyNotional <= 0) {
+    return { exceeds: false, pct: 0, maxPct, positionValue: 0, accountValue: 0 };
+  }
+
+  const positions = await getPositions(config.dataApiUrl, {
+    user: config.funderAddress,
+    limit: 500,
+    sizeThreshold: 0,
+  });
+  const openPositionsValue = positions.reduce((sum, p) => sum + positionValue(p), 0);
+  const currentTokenPosition = positions.find((p) => p.asset === tokenId);
+  const currentTokenValue = currentTokenPosition ? positionValue(currentTokenPosition) : 0;
+  let cashBalance = 0;
+  try {
+    cashBalance = await getCollateralBalanceUsd();
+  } catch (e) {
+    console.warn("Failed to fetch collateral balance for position risk check:", e instanceof Error ? e.message : e);
+  }
+
+  const accountValue = openPositionsValue + cashBalance;
+  if (accountValue <= 0) return { exceeds: false, pct: 0, maxPct, positionValue: currentTokenValue, accountValue };
+
+  const nextPositionValue = currentTokenValue + buyNotional;
+  const pct = nextPositionValue / accountValue;
+  return {
+    exceeds: pct > maxPct,
+    pct,
+    maxPct,
+    positionValue: nextPositionValue,
+    accountValue,
+  };
 }
 
 async function getManagedAssets(
@@ -386,6 +435,21 @@ export async function pollAndCopy(): Promise<{
         `Skip: order size ${orderSize} is below market minimum ${orderConfig.minOrderSize} for token ${tokenId.slice(0, 12)}...`
       );
       continue;
+    }
+    if (side === "BUY") {
+      try {
+        const buyNotional = orderSize * price;
+        const risk = await wouldExceedMaxPositionPct(tokenId, buyNotional);
+        if (risk.exceeds) {
+          errors.push(
+            `Skip: position ${tokenId.slice(0, 12)}... would be ${(risk.pct * 100).toFixed(1)}% of account after $${buyNotional.toFixed(2)} buy (max ${(risk.maxPct * 100).toFixed(1)}%, position $${risk.positionValue.toFixed(2)}, account $${risk.accountValue.toFixed(2)})`
+          );
+          continue;
+        }
+      } catch (e) {
+        errors.push(`position risk check ${tokenId}: ${e instanceof Error ? e.message : e}`);
+        continue;
+      }
     }
 
     const result = await placeLimitOrder(tokenId, side, price, orderSize, orderConfig);

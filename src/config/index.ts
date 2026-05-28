@@ -36,6 +36,7 @@ export const config = {
   activityLimit: Math.min(500, Math.max(10, parseInt(env.COPY_ACTIVITY_LIMIT ?? "100", 10))),
   sizeMultiplier: Math.max(0.01, Math.min(10, parseFloat(env.COPY_SIZE_MULTIPLIER ?? "1"))),
   maxOrderUsd: parseFloat(env.COPY_MAX_ORDER_USD ?? "0") || null,
+  maxPositionPct: Math.max(0, Math.min(1, parseFloat(env.COPY_MAX_POSITION_PCT ?? "0.4"))),
   copyTradesOnly: (env.COPY_TRADES_ONLY ?? "true").toLowerCase() === "true",
 
   dataApiUrl: (env.POLYMARKET_DATA_API_URL ?? "https://data-api.polymarket.com").replace(/\/$/, ""),
