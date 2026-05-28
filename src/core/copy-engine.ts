@@ -34,6 +34,7 @@ const SEEN_CAP = 10_000;
 const seen = new Set<string>();
 let targetSnapshotPromise: Promise<Map<string, Position>> | null = null;
 let followerSnapshotPromise: Promise<Map<string, Position>> | null = null;
+const loggedPendingExitSkips = new Set<string>();
 let warmedUp = false;
 
 async function loadState(): Promise<CopyState> {
@@ -301,9 +302,13 @@ async function reconcileManagedExits(
     const followerPosition = followerCurrent.get(tokenId);
     if (!followerPosition) continue;
     if (targetCurrent.has(tokenId)) continue;
+    if (isResolvedLikePosition(followerPosition)) continue;
     handledAssets.add(tokenId);
     if (pendingExitAssets.has(tokenId)) {
-      console.log(`Reconcile skip: pending exit already recorded for ${tokenId.slice(0, 12)}...`);
+      if (!loggedPendingExitSkips.has(tokenId)) {
+        console.log(`Reconcile skip: pending exit already recorded for ${tokenId.slice(0, 12)}...`);
+        loggedPendingExitSkips.add(tokenId);
+      }
       continue;
     }
 
