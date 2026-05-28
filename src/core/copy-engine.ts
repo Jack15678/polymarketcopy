@@ -273,10 +273,16 @@ async function reconcileManagedExits(
 ): Promise<{ copied: number; handledAssets: Set<string> }> {
   const exitCandidates = new Set([...managedAssets, ...recentTargetSellAssets]);
   const handledAssets = new Set<string>();
-  if (exitCandidates.size === 0) return { copied: 0, handledAssets };
 
   const targetCurrent = await fetchCurrentPositionMap(user, "target");
   const followerCurrent = await fetchCurrentPositionMap(config.funderAddress, "follower");
+  if (config.exitFollowerOnly) {
+    for (const tokenId of followerCurrent.keys()) {
+      if (!targetCurrent.has(tokenId)) exitCandidates.add(tokenId);
+    }
+  }
+  if (exitCandidates.size === 0) return { copied: 0, handledAssets };
+
   const pendingExitAssets = await getPendingExitAssets();
   let copied = 0;
 
@@ -312,7 +318,11 @@ async function reconcileManagedExits(
 
     console.log(
       `Reconcile exit: target no longer holds ${tokenId.slice(0, 12)}..., selling follower size=${size} @ ${price}${
-        recentTargetSellAssets.has(tokenId) && !managedAssets.has(tokenId) ? " (recent target SELL recovery)" : ""
+        recentTargetSellAssets.has(tokenId) && !managedAssets.has(tokenId)
+          ? " (recent target SELL recovery)"
+          : !managedAssets.has(tokenId)
+            ? " (follower-only cleanup)"
+            : ""
       }`
     );
     const result = await placeLimitOrder(tokenId, "SELL", price, size, orderConfig);
